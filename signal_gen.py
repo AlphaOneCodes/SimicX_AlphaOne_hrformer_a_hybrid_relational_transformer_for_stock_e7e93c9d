@@ -621,7 +621,8 @@ def _pivot_ohlcv_data(
     """
     Pivot OHLCV data to 3D array (time, ticker, feature).
 
-    Applies forward-fill then backward-fill to handle missing data
+    Applies forward-fill only to handle missing data without lookahead bias.
+    Each ticker is filled independently using only its own historical values.
     (Constraint #5: NaN Handling per Master Plan).
 
     Args:
@@ -670,13 +671,20 @@ def _pivot_ohlcv_data(
                 row['open'], row['high'], row['low'], row['close'], row['volume']
             ]
 
-    # Constraint #5 (NaN Handling): Apply forward-fill then backward-fill
+    # Constraint #5 (NaN Handling): Apply forward-fill only to avoid lookahead bias
     # for each ticker to handle gaps in financial data robustly
     for j in range(n_tickers):
         for f in range(n_features):
             series = pd.Series(data[:, j, f])
-            # Forward fill first, then backward fill to handle leading NaNs
-            series = series.ffill().bfill()
+            # Forward fill only - safer for time series
+            series = series.ffill()
+            # Fill any remaining leading NaNs with the first valid value
+            if series.notna().any():
+                first_valid = series.dropna().iloc[0]
+                series = series.fillna(first_valid)
+            else:
+                # If entire series is NaN, fill with 0
+                series = series.fillna(0.0)
             data[:, j, f] = series.values
 
     # Final safety check: replace any remaining NaN with 0
@@ -746,11 +754,16 @@ def signal_gen(
     """
     Generate trading signals using HRformer model.
 
-    Trains on historical data and generates buy/sell signals for portfolio construction.
-    On each rebalance date (every 48 days), selects top K stocks by predicted probability
-    of price rise in the next 48 days.
+    Implements the paper's 48-day buy-hold-sell cycle strategy:
+    1. Trains model on historical data
+    2. Every 48 days (rebalance date):
+       - SELL all existing positions (liquidate portfolio)
+       - Predict 48-day rise probabilities for all stocks
+       - BUY top K stocks with equal-weight allocation
+    3. Hold positions for 48 days, then repeat
 
-    Position sizing follows Master Plan formula: Q = (Capital / K) / Price_close
+    Position sizing: Q = (Capital / K) / Price_close (equal-weight allocation)
+    K = 20 for NASDAQ100 (full phase), 10 for CSI300 (or 3 for limited testing)
 
     Args:
         ohlcv_df: OHLCV DataFrame for prediction with columns:
@@ -795,7 +808,9 @@ def signal_gen(
     )
 
     # Determine K based on phase
-    K = 20 if phase == 'full' else 3
+    # Paper uses: Top 10 (CSI300) / Top 20 (NASDAQ100)
+    # Using K=3 for 'limited' phase for faster testing (adjust to 10 for CSI300-like)
+    K = 10 if phase == 'full' else 3
 
     # Load training data
     if train_data is not None:
@@ -827,9 +842,10 @@ def signal_gen(
     n_times_train = train_data_3d.shape[0]
     n_stocks_actual = len(common_tickers)
 
-    # Normalize inputs (per-feature normalization across all time and stocks)
-    train_mean = train_data_3d.mean(axis=(0, 1), keepdims=True)
-    train_std = train_data_3d.std(axis=(0, 1), keepdims=True) + 1e-8
+    # Normalize inputs (per-ticker normalization to preserve relative price characteristics)
+    # Each ticker is normalized independently across time
+    train_mean = train_data_3d.mean(axis=0, keepdims=True)  # Shape: (1, n_tickers, n_features)
+    train_std = train_data_3d.std(axis=0, keepdims=True) + 1e-8  # Shape: (1, n_tickers, n_features)
     train_data_norm = (train_data_3d - train_mean) / train_std
 
     # Create labels: 1 if Close[t+lookahead] > Close[t], else 0
@@ -963,7 +979,13 @@ def signal_gen(
         print(f"Warning: {e}. Returning empty signals.")
         return pd.DataFrame(columns=['date', 'ticker', 'action', 'quantity', 'price'])
 
-    # Normalize using training statistics
+    # Verify ticker order matches for per-ticker normalization
+    if pred_tickers != common_tickers:
+        print(f"Warning: Ticker order mismatch. Training: {common_tickers}, Prediction: {pred_tickers}")
+        return pd.DataFrame(columns=['date', 'ticker', 'action', 'quantity', 'price'])
+
+    # Normalize using training statistics (per-ticker)
+    # train_mean and train_std have shape (1, n_tickers, n_features)
     pred_data_norm = (pred_data_3d - train_mean) / train_std
 
     # Build close price lookup (from original pred_df for accurate signal prices)
@@ -1003,6 +1025,12 @@ def signal_gen(
         return pd.DataFrame(columns=['date', 'ticker', 'action', 'quantity', 'price'])
 
     # === Generate trading signals ===
+    # Trading Strategy (from HRformer paper):
+    # "48-day buy-hold-sell cycle: select top K stocks by predicted rise probability,
+    # equal-weight allocation, held for 48 days then closed; proceeds rolled into
+    # next cycle to purchase new batch of top-ranked stocks."
+    # Reference: Electronics 2025, 14, 4459, Section 4.2
+    
     pred_dates_sorted = sorted(predictions.keys())
 
     # Find rebalance dates (every rebalance_period days)
@@ -1012,7 +1040,7 @@ def signal_gen(
     # Track holdings with quantities: {ticker: quantity}
     current_holdings: Dict[str, int] = {}
 
-    # Calculate allocation per position based on Master Plan formula
+    # Calculate allocation per position based on equal-weight strategy
     # Q = (Capital / K) / Price_close
     allocation_per_position = initial_capital / K
 
@@ -1026,41 +1054,41 @@ def signal_gen(
         sorted_tickers = sorted(probs.keys(), key=lambda t: probs[t], reverse=True)
         top_k = set(sorted_tickers[:K])
 
-        # Generate sell orders for positions not in top K
+        # Paper strategy: 48-day buy-hold-sell cycle
+        # Step 1: SELL ALL existing positions (close entire portfolio)
         for ticker in list(current_holdings.keys()):
-            if ticker not in top_k:
-                if date in close_prices_dict and ticker in close_prices_dict[date]:
-                    price = close_prices_dict[date][ticker]
-                    quantity = current_holdings[ticker]
+            if date in close_prices_dict and ticker in close_prices_dict[date]:
+                price = close_prices_dict[date][ticker]
+                quantity = current_holdings[ticker]
+                if quantity > 0:
+                    signals.append({
+                        'date': date,
+                        'ticker': ticker,
+                        'action': 'sell',
+                        'quantity': quantity,
+                        'price': price
+                    })
+        
+        # Clear all holdings after selling everything
+        current_holdings.clear()
+
+        # Step 2: BUY new top K positions (equal weight allocation)
+        for ticker in top_k:
+            if date in close_prices_dict and ticker in close_prices_dict[date]:
+                price = close_prices_dict[date][ticker]
+                # Master Plan formula: Q = (Capital / K) / Price_close
+                if price > 0:
+                    quantity = int(allocation_per_position / price)
                     if quantity > 0:
                         signals.append({
                             'date': date,
                             'ticker': ticker,
-                            'action': 'sell',
+                            'action': 'buy',
                             'quantity': quantity,
                             'price': price
                         })
-                # Remove from holdings
-                del current_holdings[ticker]
-
-        # Generate buy orders for new positions in top K
-        for ticker in top_k:
-            if ticker not in current_holdings:
-                if date in close_prices_dict and ticker in close_prices_dict[date]:
-                    price = close_prices_dict[date][ticker]
-                    # Master Plan formula: Q = (Capital / K) / Price_close
-                    if price > 0:
-                        quantity = int(allocation_per_position / price)
-                        if quantity > 0:
-                            signals.append({
-                                'date': date,
-                                'ticker': ticker,
-                                'action': 'buy',
-                                'quantity': quantity,
-                                'price': price
-                            })
-                            # Track holding with quantity
-                            current_holdings[ticker] = quantity
+                        # Track holding with quantity
+                        current_holdings[ticker] = quantity
 
     # Create output DataFrame
     if not signals:

@@ -205,17 +205,17 @@ def run_tuning(phase: str = 'limited') -> Dict[str, Any]:
     train_cutoff_date = train_end_date.strftime('%Y-%m-%d')
     print(f"Train cutoff date: {train_cutoff_date}")
     
-    # Define hyperparameter grid (smaller for speed/stability)
+    # Define hyperparameter grid (expanded for comprehensive search)
     param_grid = {
-        'learning_rate': [1e-3, 5e-4],
-        'hidden_dim': [64, 128],
-        'lookback': [48, 96]
+        'learning_rate': [1e-3, 1e-4, 4],
+        'hidden_dim': [32, 64, 128, 256],
+        'lookback': [24, 48, 96, 144],
+        'dropout': [0.05, 0.1],
+        'batch_size': [16, 32, 64]
     }
     
     # Fixed parameters not in grid
     fixed_params = {
-        'dropout': 0.1,
-        'batch_size': 32,
         'epochs': 5,
         'n_heads': 4,
         'n_layers': 2,
@@ -233,8 +233,8 @@ def run_tuning(phase: str = 'limited') -> Dict[str, Any]:
     print(f"\n{'='*60}")
     print(f"Running grid search over {len(combinations)} combinations")
     print(f"Grid: {param_grid}")
-    print(f"Fixed: dropout={fixed_params['dropout']}, "
-          f"batch_size={fixed_params['batch_size']}, epochs={fixed_params['epochs']}")
+    print(f"Fixed: epochs={fixed_params['epochs']}, "
+          f"n_heads={fixed_params['n_heads']}, n_layers={fixed_params['n_layers']}")
     print(f"{'='*60}")
     
     best_accuracy = -1.0
@@ -255,12 +255,12 @@ def run_tuning(phase: str = 'limited') -> Dict[str, Any]:
                 train_data=training_data,
                 lr=current_params['learning_rate'],
                 epochs=fixed_params['epochs'],
-                batch_size=fixed_params['batch_size'],
+                batch_size=current_params['batch_size'],
                 hidden_dim=current_params['hidden_dim'],
                 seq_len=current_params['lookback'],
                 n_heads=fixed_params['n_heads'],
                 n_layers=fixed_params['n_layers'],
-                dropout=fixed_params['dropout'],
+                dropout=current_params['dropout'],
                 kernel_size=fixed_params['kernel_size'],
                 freq_threshold=fixed_params['freq_threshold'],
                 lookahead=fixed_params['lookahead'],
@@ -281,6 +281,8 @@ def run_tuning(phase: str = 'limited') -> Dict[str, Any]:
                 'learning_rate': current_params['learning_rate'],
                 'hidden_dim': current_params['hidden_dim'],
                 'lookback': current_params['lookback'],
+                'dropout': current_params['dropout'],
+                'batch_size': current_params['batch_size'],
                 'accuracy': accuracy,
                 'n_signals': len(signals)
             }
@@ -297,6 +299,8 @@ def run_tuning(phase: str = 'limited') -> Dict[str, Any]:
                 'learning_rate': current_params['learning_rate'],
                 'hidden_dim': current_params['hidden_dim'],
                 'lookback': current_params['lookback'],
+                'dropout': current_params['dropout'],
+                'batch_size': current_params['batch_size'],
                 'accuracy': 0.0,
                 'error': str(e)
             }
@@ -317,9 +321,9 @@ def run_tuning(phase: str = 'limited') -> Dict[str, Any]:
     output_params: Dict[str, Any] = {
         'learning_rate': float(best_params['learning_rate']),
         'hidden_dim': int(best_params['hidden_dim']),
-        'dropout': float(fixed_params['dropout']),
+        'dropout': float(best_params['dropout']),
         'lookback': int(best_params['lookback']),
-        'batch_size': int(fixed_params['batch_size']),
+        'batch_size': int(best_params['batch_size']),
         'epochs': int(fixed_params['epochs'])
     }
     

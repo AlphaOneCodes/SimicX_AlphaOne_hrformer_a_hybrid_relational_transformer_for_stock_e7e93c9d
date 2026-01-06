@@ -293,9 +293,9 @@ def run_pipeline(phase: str) -> float:
     if 'date' in sheet.columns:
         sheet = sheet.rename(columns={'date': 'time'})
     
-    # Run trading simulation
+    # Run trading simulation with matching tickers
     print("Running trading simulation...")
-    pnl, pnl_details = trading_sim(trading_sheet=sheet)
+    pnl, pnl_details = trading_sim(trading_sheet=sheet, ohlcv_tickers=tickers)
     
     # Generate and print performance report
     report = generate_performance_report(pnl_details)
@@ -304,6 +304,8 @@ def run_pipeline(phase: str) -> float:
     print("=" * 80)
     
     print(f"\nFinal P&L: ${pnl:,.2f}")
+    sheet.to_csv(f"trading_sheet.csv", index=False)
+    pnl_details.to_csv(f"pnl_details.csv", index=False)
     
     return pnl
 
