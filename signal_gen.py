@@ -810,7 +810,7 @@ def signal_gen(
     # Determine K based on phase
     # Paper uses: Top 10 (CSI300) / Top 20 (NASDAQ100)
     # Using K=3 for 'limited' phase for faster testing (adjust to 10 for CSI300-like)
-    K = 10 if phase == 'full' else 3
+    K = 20 if phase == 'full' else 3
 
     # Load training data
     if train_data is not None:
