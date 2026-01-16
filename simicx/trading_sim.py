@@ -1113,6 +1113,7 @@ def trading_sim(
         realized_pnl = 0.0
         executed_qty = target_qty
         
+<<<<<<< HEAD
         # Handle quantity=0 as signal to close entire position (for daily rebalancing)
         if target_qty == 0 and position.quantity != 0:
             # Close entire position
@@ -1132,6 +1133,8 @@ def trading_sim(
             slippage_cost = abs(exec_price - target_price) * executed_qty
             notes = 'Closing position (daily rebalance)'
         
+=======
+>>>>>>> 7af7af4a8e7eb20c540ff0671fee8a5ec80791a7
         if action == 'buy':
             total_cost = trade_value + commission
             
